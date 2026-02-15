@@ -1,5 +1,4 @@
 import "./env.js";
-console.log("ENV CLOUDINARY_URL:", process.env.CLOUDINARY_URL);
 import upload from "./middleware/upload.js";
 import { uploadToCloudinary } from "./utils/uploadToCloudinary.js";
 import { db } from "./db.js";
@@ -14,10 +13,6 @@ console.log("Cloudinary config OK:", cloudinary.config().cloud_name);
 
 const app = express();
 
-// if there is a authentication problem
-// ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '@Admin123';
-// or simply import mysql2
-
 app.use(cors());
 app.use(express.json());
 app.use("/auth", authRoutes);
@@ -26,7 +21,7 @@ app.get("/", (req, res) => {
   res.json("hello this is the backend");
 });
 
-app.get("/genres", (req, res) => {
+app.get("/genres", async (req, res) => {
   const q = `
     SELECT DISTINCT genre
     FROM books
@@ -34,20 +29,17 @@ app.get("/genres", (req, res) => {
     ORDER BY genre ASC
   `;
 
-  db.query(q, (err, data) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json([]);
-    }
-
-    // Flatten into string array
-    const genres = data.map((row) => row.genre);
-
+  try {
+    const { rows } = await db.query(q);
+    const genres = rows.map((row) => row.genre);
     return res.status(200).json(genres);
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json([]);
+  }
 });
 
-app.get("/books", (req, res) => {
+app.get("/books", async (req, res) => {
   const q = req.query.q || "";
   const genre = req.query.genre || null;
 
@@ -55,7 +47,6 @@ app.get("/books", (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 20, 50);
   const offset = (page - 1) * limit;
 
-  // Whitelisted sorting
   const SORT_MAP = {
     title: "books.title",
     created_at: "books.created_at",
@@ -64,12 +55,15 @@ app.get("/books", (req, res) => {
   const sort = SORT_MAP[req.query.sort] || SORT_MAP.title;
   const order = req.query.order === "desc" ? "DESC" : "ASC";
 
-  // WHERE clause construction
-  const whereClauses = [`books.title LIKE ?`];
-  const params = [`%${q}%`];
+  const whereClauses = [];
+  const params = [];
+
+  // $1
+  whereClauses.push(`books.title ILIKE $${params.length + 1}`);
+  params.push(`%${q}%`);
 
   if (genre) {
-    whereClauses.push(`books.genre = ?`);
+    whereClauses.push(`books.genre = $${params.length + 1}`);
     params.push(genre);
   }
 
@@ -87,48 +81,49 @@ app.get("/books", (req, res) => {
       books.title,
       books.authors,
       books.genre,
-      books.description AS \`desc\`,
+      books.description AS "desc",
       books.cover_id,
       books.cover_source,
       books.cover_url,
       books.created_by AS user_id,
+      books.created_at,
       users.username
     FROM books
     LEFT JOIN users
       ON books.created_by = users.id
     WHERE ${whereSQL}
     ORDER BY ${sort} ${order}
-    LIMIT ? OFFSET ?
+    LIMIT $${params.length + 1}
+    OFFSET $${params.length + 2}
   `;
 
-  db.query(countQuery, params, (err, countResult) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json(err);
-    }
+  try {
+    const { rows: countRows } = await db.query(countQuery, params);
 
-    const totalBooks = countResult[0].total;
+    const totalBooks = parseInt(countRows[0].total, 10);
     const totalPages = Math.ceil(totalBooks / limit);
 
-    db.query(dataQuery, [...params, limit, offset], (err, data) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json(err);
-      }
+    const { rows: dataRows } = await db.query(dataQuery, [
+      ...params,
+      limit,
+      offset,
+    ]);
 
-      return res.json({
-        books: data,
-        pagination: {
-          currentPage: page,
-          totalPages,
-          totalBooks,
-        },
-      });
+    return res.json({
+      books: dataRows,
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalBooks,
+      },
     });
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json(err);
+  }
 });
 
-app.get("/my-books", verifyToken, (req, res) => {
+app.get("/my-books", verifyToken, async (req, res) => {
   const q = req.query.q || "";
   const genre = req.query.genre || null;
 
@@ -144,12 +139,19 @@ app.get("/my-books", verifyToken, (req, res) => {
   const sort = SORT_MAP[req.query.sort] || SORT_MAP.created_at;
   const order = req.query.order === "asc" ? "ASC" : "DESC";
 
-  const whereClauses = [`user_books.user_id = ?`, `books.title LIKE ?`];
+  const whereClauses = [];
+  const params = [];
 
-  const params = [req.user.id, `%${q}%`];
+  // user_id
+  whereClauses.push(`user_books.user_id = $${params.length + 1}`);
+  params.push(req.user.id);
+
+  // title search
+  whereClauses.push(`books.title ILIKE $${params.length + 1}`);
+  params.push(`%${q}%`);
 
   if (genre) {
-    whereClauses.push(`books.genre = ?`);
+    whereClauses.push(`books.genre = $${params.length + 1}`);
     params.push(genre);
   }
 
@@ -168,48 +170,49 @@ app.get("/my-books", verifyToken, (req, res) => {
       books.title,
       books.authors,
       books.genre,
-      books.description AS \`desc\`,
+      books.description AS "desc",
       books.cover_id,
       books.cover_source,
       books.cover_url,
       books.created_by AS user_id,
+      books.created_at,
       users.username
     FROM user_books
     JOIN books ON books.id = user_books.book_id
     LEFT JOIN users ON books.created_by = users.id
     WHERE ${whereSQL}
     ORDER BY ${sort} ${order}
-    LIMIT ? OFFSET ?
+    LIMIT $${params.length + 1}
+    OFFSET $${params.length + 2}
   `;
 
-  db.query(countQuery, params, (err, countResult) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json([]);
-    }
+  try {
+    const { rows: countRows } = await db.query(countQuery, params);
 
-    const totalBooks = countResult[0].total;
+    const totalBooks = parseInt(countRows[0].total, 10);
     const totalPages = Math.ceil(totalBooks / limit);
 
-    db.query(dataQuery, [...params, limit, offset], (err, data) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json([]);
-      }
+    const { rows: dataRows } = await db.query(dataQuery, [
+      ...params,
+      limit,
+      offset,
+    ]);
 
-      return res.json({
-        books: data,
-        pagination: {
-          currentPage: page,
-          totalPages,
-          totalBooks,
-        },
-      });
+    return res.json({
+      books: dataRows,
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalBooks,
+      },
     });
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json([]);
+  }
 });
 
-app.get("/books/:id", (req, res) => {
+app.get("/books/:id", async (req, res) => {
   const bookId = req.params.id;
 
   const q = `
@@ -218,76 +221,75 @@ app.get("/books/:id", (req, res) => {
       books.title,
       books.authors,
       books.genre,
-      books.description AS \`desc\`,
+      books.description AS "desc",
       books.cover_id,
       books.cover_source,
       books.cover_url,
       books.created_by AS user_id,
+      books.created_at,
       users.username
     FROM books
     LEFT JOIN users
       ON books.created_by = users.id
-    WHERE books.id = ?
+    WHERE books.id = $1
     LIMIT 1
   `;
 
-  db.query(q, [bookId], (err, data) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json("Failed to fetch book");
-    }
+  try {
+    const { rows } = await db.query(q, [bookId]);
 
-    if (data.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json("Book not found");
     }
 
-    return res.status(200).json(data[0]);
-  });
+    return res.status(200).json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json("Failed to fetch book");
+  }
 });
 
-app.get("/user-books/:bookId", verifyToken, (req, res) => {
+app.get("/user-books/:bookId", verifyToken, async (req, res) => {
   const userId = req.user.id;
   const bookId = req.params.bookId;
 
   const q = `
     SELECT 1
     FROM user_books
-    WHERE user_id = ? AND book_id = ?
+    WHERE user_id = $1 AND book_id = $2
     LIMIT 1
   `;
 
-  db.query(q, [userId, bookId], (err, data) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json(false);
-    }
-
-    return res.json(data.length > 0);
-  });
+  try {
+    const { rows } = await db.query(q, [userId, bookId]);
+    return res.json(rows.length > 0);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json(false);
+  }
 });
 
-app.get("/reading-list/:bookId", verifyToken, (req, res) => {
+app.get("/reading-list/:bookId", verifyToken, async (req, res) => {
   const userId = req.user.id;
   const bookId = req.params.bookId;
 
   const q = `
     SELECT 1
     FROM reading_list
-    WHERE user_id = ? AND book_id = ?
+    WHERE user_id = $1 AND book_id = $2
     LIMIT 1
   `;
 
-  db.query(q, [userId, bookId], (err, data) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json(false);
-    }
-
-    return res.json(data.length > 0);
-  });
+  try {
+    const { rows } = await db.query(q, [userId, bookId]);
+    return res.json(rows.length > 0);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json(false);
+  }
 });
 
-app.get("/reading-list", verifyToken, (req, res) => {
+app.get("/reading-list", verifyToken, async (req, res) => {
   const q = req.query.q || "";
   const genre = req.query.genre || null;
 
@@ -303,12 +305,19 @@ app.get("/reading-list", verifyToken, (req, res) => {
   const sort = SORT_MAP[req.query.sort] || SORT_MAP.created_at;
   const order = req.query.order === "asc" ? "ASC" : "DESC";
 
-  const whereClauses = [`reading_list.user_id = ?`, `books.title LIKE ?`];
+  const whereClauses = [];
+  const params = [];
 
-  const params = [req.user.id, `%${q}%`];
+  // user_id
+  whereClauses.push(`reading_list.user_id = $${params.length + 1}`);
+  params.push(req.user.id);
+
+  // title search
+  whereClauses.push(`books.title ILIKE $${params.length + 1}`);
+  params.push(`%${q}%`);
 
   if (genre) {
-    whereClauses.push(`books.genre = ?`);
+    whereClauses.push(`books.genre = $${params.length + 1}`);
     params.push(genre);
   }
 
@@ -327,7 +336,7 @@ app.get("/reading-list", verifyToken, (req, res) => {
       books.title,
       books.authors,
       books.genre,
-      books.description AS \`desc\`,
+      books.description AS "desc",
       books.cover_id,
       books.cover_source,
       books.cover_url,
@@ -337,113 +346,92 @@ app.get("/reading-list", verifyToken, (req, res) => {
     JOIN books ON books.id = reading_list.book_id
     WHERE ${whereSQL}
     ORDER BY ${sort} ${order}
-    LIMIT ? OFFSET ?
+    LIMIT $${params.length + 1}
+    OFFSET $${params.length + 2}
   `;
 
-  db.query(countQuery, params, (err, countResult) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json([]);
-    }
+  try {
+    const { rows: countRows } = await db.query(countQuery, params);
 
-    const totalBooks = countResult[0].total;
+    const totalBooks = parseInt(countRows[0].total, 10);
     const totalPages = Math.ceil(totalBooks / limit);
 
-    db.query(dataQuery, [...params, limit, offset], (err, data) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json([]);
-      }
+    const { rows: dataRows } = await db.query(dataQuery, [
+      ...params,
+      limit,
+      offset,
+    ]);
 
-      return res.json({
-        books: data,
-        pagination: {
-          currentPage: page,
-          totalPages,
-          totalBooks,
-        },
-      });
+    return res.json({
+      books: dataRows,
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalBooks,
+      },
     });
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json([]);
+  }
 });
 
-app.put("/reading-list/:bookId/current", verifyToken, (req, res) => {
+app.put("/reading-list/:bookId/current", verifyToken, async (req, res) => {
   const userId = req.user.id;
   const bookId = req.params.bookId;
 
-  db.beginTransaction((err) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json("Transaction failed");
-    }
+  const client = await db.connect();
 
-    // Reset all
+  try {
+    await client.query("BEGIN");
+
     const resetQuery = `
       UPDATE reading_list
-      SET currently_reading = 0
-      WHERE user_id = ?
+      SET currently_reading = FALSE
+      WHERE user_id = $1
     `;
 
-    db.query(resetQuery, [userId], (err) => {
-      if (err) {
-        return db.rollback(() => {
-          console.error(err);
-          res.status(500).json("Failed to reset reading state");
-        });
-      }
+    await client.query(resetQuery, [userId]);
 
-      // Set selected book
-      const setQuery = `
-        UPDATE reading_list
-        SET currently_reading = 1
-        WHERE user_id = ? AND book_id = ?
-      `;
+    const setQuery = `
+      UPDATE reading_list
+      SET currently_reading = TRUE
+      WHERE user_id = $1 AND book_id = $2
+    `;
 
-      db.query(setQuery, [userId, bookId], (err, result) => {
-        if (err || result.affectedRows === 0) {
-          return db.rollback(() => {
-            console.error(err);
-            res.status(500).json("Failed to set current book");
-          });
-        }
+    const result = await client.query(setQuery, [userId, bookId]);
 
-        // Commit
-        db.commit((err) => {
-          if (err) {
-            return db.rollback(() => {
-              console.error(err);
-              res.status(500).json("Commit failed");
-            });
-          }
+    if (result.rowCount === 0) {
+      throw new Error("No rows updated");
+    }
 
-          return res.status(200).json("Currently reading updated");
-        });
-      });
-    });
-  });
+    await client.query("COMMIT");
+
+    return res.status(200).json("Currently reading updated");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    return res.status(500).json("Failed to update reading state");
+  } finally {
+    client.release();
+  }
 });
 
-app.get("/reading-list/:bookId/status", verifyToken, (req, res) => {
+app.get("/reading-list/:bookId/status", verifyToken, async (req, res) => {
   const userId = req.user.id;
   const bookId = req.params.bookId;
 
   const q = `
     SELECT currently_reading
     FROM reading_list
-    WHERE user_id = ? AND book_id = ?
+    WHERE user_id = $1 AND book_id = $2
     LIMIT 1
   `;
 
-  db.query(q, [userId, bookId], (err, data) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({
-        inReadingList: false,
-        currentlyReading: false,
-      });
-    }
+  try {
+    const { rows } = await db.query(q, [userId, bookId]);
 
-    if (data.length === 0) {
+    if (rows.length === 0) {
       return res.status(200).json({
         inReadingList: false,
         currentlyReading: false,
@@ -452,12 +440,18 @@ app.get("/reading-list/:bookId/status", verifyToken, (req, res) => {
 
     return res.status(200).json({
       inReadingList: true,
-      currentlyReading: Boolean(data[0].currently_reading),
+      currentlyReading: rows[0].currently_reading,
     });
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      inReadingList: false,
+      currentlyReading: false,
+    });
+  }
 });
 
-app.get("/book-actions/:bookId", verifyToken, (req, res) => {
+app.get("/book-actions/:bookId", verifyToken, async (req, res) => {
   const userId = req.user.id;
   const bookId = req.params.bookId;
 
@@ -465,28 +459,28 @@ app.get("/book-actions/:bookId", verifyToken, (req, res) => {
     SELECT
       EXISTS(
         SELECT 1 FROM user_books
-        WHERE user_id = ? AND book_id = ?
-      ) AS inMyBooks,
+        WHERE user_id = $1 AND book_id = $2
+      ) AS "inMyBooks",
       EXISTS(
         SELECT 1 FROM reading_list
-        WHERE user_id = ? AND book_id = ?
-      ) AS inReadingList
+        WHERE user_id = $3 AND book_id = $4
+      ) AS "inReadingList"
   `;
 
-  db.query(q, [userId, bookId, userId, bookId], (err, data) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({
-        inMyBooks: false,
-        inReadingList: false,
-      });
-    }
+  try {
+    const { rows } = await db.query(q, [userId, bookId, userId, bookId]);
 
     return res.status(200).json({
-      inMyBooks: Boolean(data[0].inMyBooks),
-      inReadingList: Boolean(data[0].inReadingList),
+      inMyBooks: rows[0].inMyBooks,
+      inReadingList: rows[0].inReadingList,
     });
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      inMyBooks: false,
+      inReadingList: false,
+    });
+  }
 });
 
 app.post("/books", verifyToken, upload.single("cover"), async (req, res) => {
@@ -499,27 +493,26 @@ app.post("/books", verifyToken, upload.single("cover"), async (req, res) => {
 
     let coverUrl = null;
 
-    // If user uploaded an image, upload to Cloudinary
     if (req.file) {
-      console.log("Uploading to Cloudinary...");
       coverUrl = await uploadToCloudinary(req.file);
-      console.log("Cloudinary URL:", coverUrl);
     }
 
     const coverSource = coverUrl ? "cloudinary" : "none";
 
-    const q = `
-        INSERT INTO books (
-          title,
-          authors,
-          genre,
-          description,
-          cover_source,
-          cover_url,
-          source,
-          created_by
-        ) VALUES (?)
-      `;
+    const insertQuery = `
+      INSERT INTO books (
+        title,
+        authors,
+        genre,
+        description,
+        cover_source,
+        cover_url,
+        source,
+        created_by
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING id
+    `;
 
     const values = [
       title,
@@ -532,32 +525,24 @@ app.post("/books", verifyToken, upload.single("cover"), async (req, res) => {
       req.user.id,
     ];
 
-    db.query(q, [values], (err, result) => {
-      if (err) {
-        console.error("MYSQL ERROR:", err);
-        return res.status(500).json(err.sqlMessage);
-      }
+    const { rows } = await db.query(insertQuery, values);
+    const bookId = rows[0].id;
 
-      const bookId = result.insertId;
+    const userBooksQuery = `
+      INSERT INTO user_books (user_id, book_id, status)
+      VALUES ($1, $2, 'owned')
+      ON CONFLICT (user_id, book_id) DO NOTHING
+    `;
 
-      // 🔹 Automatically add to user_books
-      const userBooksQuery = `
-    INSERT INTO user_books (user_id, book_id, status)
-    VALUES (?, ?, 'owned')
-  `;
+    try {
+      await db.query(userBooksQuery, [req.user.id, bookId]);
+    } catch (ubErr) {
+      console.error("USER_BOOKS ERROR:", ubErr);
+    }
 
-      db.query(userBooksQuery, [req.user.id, bookId], (ubErr) => {
-        if (ubErr) {
-          console.error("USER_BOOKS ERROR:", ubErr);
-          // We do NOT rollback book creation
-          // Ownership insert failing is non-fatal
-        }
-
-        return res.status(201).json({
-          message: "Book created successfully",
-          bookId,
-        });
-      });
+    return res.status(201).json({
+      message: "Book created successfully",
+      bookId,
     });
   } catch (error) {
     console.error(error);
@@ -565,7 +550,7 @@ app.post("/books", verifyToken, upload.single("cover"), async (req, res) => {
   }
 });
 
-app.post("/user-books", verifyToken, (req, res) => {
+app.post("/user-books", verifyToken, async (req, res) => {
   const userId = req.user.id;
   const { bookId } = req.body;
 
@@ -574,21 +559,21 @@ app.post("/user-books", verifyToken, (req, res) => {
   }
 
   const q = `
-    INSERT IGNORE INTO user_books (user_id, book_id, status)
-    VALUES (?, ?, 'owned')
+    INSERT INTO user_books (user_id, book_id, status)
+    VALUES ($1, $2, 'owned')
+    ON CONFLICT (user_id, book_id) DO NOTHING
   `;
 
-  db.query(q, [userId, bookId], (err) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json("Failed to add to My Books");
-    }
-
+  try {
+    await db.query(q, [userId, bookId]);
     return res.status(201).json("Added to My Books");
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json("Failed to add to My Books");
+  }
 });
 
-app.post("/reading-list", verifyToken, (req, res) => {
+app.post("/reading-list", verifyToken, async (req, res) => {
   const userId = req.user.id;
   const { bookId } = req.body;
 
@@ -597,77 +582,96 @@ app.post("/reading-list", verifyToken, (req, res) => {
   }
 
   const q = `
-    INSERT IGNORE INTO reading_list (user_id, book_id, currently_reading)
-    VALUES (?, ?, 0)
+    INSERT INTO reading_list (user_id, book_id, currently_reading)
+    VALUES ($1, $2, FALSE)
+    ON CONFLICT (user_id, book_id) DO NOTHING
   `;
 
-  db.query(q, [userId, bookId], (err) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json("Failed to add to Reading List");
-    }
-
+  try {
+    await db.query(q, [userId, bookId]);
     return res.status(201).json("Added to Reading List");
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json("Failed to add to Reading List");
+  }
 });
 
-app.delete("/books/:id", verifyToken, authorizeBookOwner, (req, res) => {
+app.delete("/books/:id", verifyToken, authorizeBookOwner, async (req, res) => {
   const bookId = req.params.id;
 
-  const q = "DELETE FROM books WHERE id = ?";
+  const getQuery = `
+    SELECT created_at
+    FROM books
+    WHERE id = $1
+  `;
 
-  db.query(q, [bookId], (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json("Failed to delete book");
-    }
+  try {
+    const { rows } = await db.query(getQuery, [bookId]);
 
-    if (result.affectedRows === 0) {
+    if (rows.length === 0) {
       return res.status(404).json("Book not found");
     }
+
+    const createdAt = new Date(rows[0].created_at);
+    const now = new Date();
+    const oneDay = 24 * 60 * 60 * 1000;
+
+    if (now - createdAt > oneDay) {
+      return res
+        .status(403)
+        .json("You can only delete this book within 24 hours of creation.");
+    }
+
+    const deleteQuery = `
+      DELETE FROM books
+      WHERE id = $1
+    `;
+
+    await db.query(deleteQuery, [bookId]);
 
     return res.status(200).json({
       message: "Book deleted successfully",
     });
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json("Failed to delete book");
+  }
 });
 
-app.delete("/user-books/:bookId", verifyToken, (req, res) => {
+app.delete("/user-books/:bookId", verifyToken, async (req, res) => {
   const userId = req.user.id;
   const bookId = req.params.bookId;
 
   const q = `
     DELETE FROM user_books
-    WHERE user_id = ? AND book_id = ?
+    WHERE user_id = $1 AND book_id = $2
   `;
 
-  db.query(q, [userId, bookId], (err) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json("Failed to remove from My Books");
-    }
-
+  try {
+    await db.query(q, [userId, bookId]);
     return res.status(200).json("Removed from My Books");
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json("Failed to remove from My Books");
+  }
 });
 
-app.delete("/reading-list/:bookId", verifyToken, (req, res) => {
+app.delete("/reading-list/:bookId", verifyToken, async (req, res) => {
   const userId = req.user.id;
   const bookId = req.params.bookId;
 
   const q = `
     DELETE FROM reading_list
-    WHERE user_id = ? AND book_id = ?
+    WHERE user_id = $1 AND book_id = $2
   `;
 
-  db.query(q, [userId, bookId], (err) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json("Failed to remove from Reading List");
-    }
-
+  try {
+    await db.query(q, [userId, bookId]);
     return res.status(200).json("Removed from Reading List");
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json("Failed to remove from Reading List");
+  }
 });
 
 app.put(
@@ -678,28 +682,49 @@ app.put(
   async (req, res) => {
     try {
       const bookId = req.params.id;
+
+      const timeCheckQuery = `
+        SELECT created_at
+        FROM books
+        WHERE id = $1
+      `;
+
+      const { rows } = await db.query(timeCheckQuery, [bookId]);
+
+      if (!rows || rows.length === 0) {
+        return res.status(404).json("Book not found");
+      }
+
+      const createdAt = new Date(rows[0].created_at);
+      const now = new Date();
+      const oneDay = 24 * 60 * 60 * 1000;
+
+      if (now - createdAt > oneDay) {
+        return res
+          .status(403)
+          .json("You can only update this book within 24 hours of creation.");
+      }
+
       const { title, authors, desc, genre } = req.body;
 
       let coverUrl = null;
       let coverSource = null;
 
-      // If user uploaded a new cover, upload to Cloudinary
       if (req.file) {
-        console.log("Uploading new cover to Cloudinary...");
         coverUrl = await uploadToCloudinary(req.file);
         coverSource = "cloudinary";
       }
 
-      const q = `
+      const updateQuery = `
         UPDATE books
         SET
-          title = ?,
-          authors = ?,
-          genre = ?,
-          description = ?,
-          cover_url = COALESCE(?, cover_url),
-          cover_source = COALESCE(?, cover_source)
-        WHERE id = ?
+          title = $1,
+          authors = $2,
+          genre = $3,
+          description = $4,
+          cover_url = COALESCE($5, cover_url),
+          cover_source = COALESCE($6, cover_source)
+        WHERE id = $7
       `;
 
       const values = [
@@ -712,14 +737,9 @@ app.put(
         bookId,
       ];
 
-      db.query(q, values, (err) => {
-        if (err) {
-          console.error("MYSQL ERROR:", err);
-          return res.status(500).json("Failed to update book");
-        }
+      await db.query(updateQuery, values);
 
-        return res.status(200).json("Book updated successfully");
-      });
+      return res.status(200).json("Book updated successfully");
     } catch (error) {
       console.error(error);
       return res.status(500).json("Book update failed");

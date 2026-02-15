@@ -8,47 +8,57 @@ const router = express.Router();
 /**
  * REGISTER
  */
-router.post("/register", (req, res) => {
-  const q = "INSERT INTO users (`username`, `email`, `password`) VALUES (?)";
+router.post("/register", async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
 
-  const salt = bcrypt.genSaltSync(10);
-  const hashedPassword = bcrypt.hashSync(req.body.password, salt);
+    const salt = bcrypt.genSaltSync(10);
+    const hashedPassword = bcrypt.hashSync(password, salt);
 
-  const values = [req.body.username, req.body.email, hashedPassword];
+    const q = `
+      INSERT INTO users (username, email, password)
+      VALUES ($1, $2, $3)
+      RETURNING id, username, email, role, created_at
+    `;
 
-  db.query(q, [values], (err, data) => {
-    if (err) return res.status(500).json(err);
+    const { rows } = await db.query(q, [username, email, hashedPassword]);
+
     return res.status(201).json("User registered successfully");
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json(err.message);
+  }
 });
 
 /**
  * LOGIN
  */
-router.post("/login", (req, res) => {
-  const q = "SELECT * FROM users WHERE email = ?";
+router.post("/login", async (req, res) => {
+  try {
+    const q = `
+      SELECT *
+      FROM users
+      WHERE email = $1
+      LIMIT 1
+    `;
 
-  db.query(q, [req.body.email], (err, data) => {
-    if (err) return res.status(500).json(err);
+    const { rows } = await db.query(q, [req.body.email]);
 
-    // user not found
-    if (data.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json("User not found");
     }
 
-    const user = data[0];
+    const user = rows[0];
 
-    // compare password
     const isPasswordCorrect = bcrypt.compareSync(
       req.body.password,
-      user.password
+      user.password,
     );
 
     if (!isPasswordCorrect) {
       return res.status(400).json("Wrong email or password");
     }
 
-    // create JWT
     const token = jwt.sign(
       {
         id: user.id,
@@ -57,17 +67,19 @@ router.post("/login", (req, res) => {
         role: user.role,
       },
       process.env.JWT_SECRET,
-      { expiresIn: "1d" }
+      { expiresIn: "1d" },
     );
 
-    // remove password before sending response
     const { password, ...otherDetails } = user;
 
-    res.status(200).json({
+    return res.status(200).json({
       ...otherDetails,
       token,
     });
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json(err.message);
+  }
 });
 
 export default router;

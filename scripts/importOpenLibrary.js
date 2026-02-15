@@ -4,39 +4,64 @@ import csv from "csv-parser";
 import { db } from "../db.js";
 
 // ---- CONFIG ----
-const CSV_PATH = path.join(process.cwd(), "data", "final_library_5.csv");
+const CSV_PATH = path.join(process.cwd(), "data", "final_library_6.csv");
 const BATCH_SIZE = 200; // Increased batch size for M4 efficiency
 
 // ---- INSERT FUNCTION ----
 const insertBatch = async (rows) => {
-  if (rows.length === 0) return;
+  if (rows.length === 0) return 0;
 
-  // Map CSV columns to Database columns
-  const values = rows.map((row) => [
-    row.work_key,
-    row.title,
-    row.author_name, // Make sure this matches your CSV header exactly
-    row.description,
-    row.genre,
-    "openlibrary", // cover_source
-    row.cover_id,
-    "openlibrary", // source
-    null, // created_by
-  ]);
+  let inserted = 0;
 
-  const sql = `
-    INSERT IGNORE INTO books (
-      work_key, title, authors, description, genre, 
-      cover_source, cover_id, source, created_by
-    ) VALUES ?
-  `;
+  const client = await db.connect();
 
-  return new Promise((resolve, reject) => {
-    db.query(sql, [values], (err, result) => {
-      if (err) return reject(err);
-      resolve(result.affectedRows);
-    });
-  });
+  try {
+    await client.query("BEGIN");
+
+    for (const row of rows) {
+      const sql = `
+        INSERT INTO books (
+          work_key,
+          title,
+          authors,
+          description,
+          genre,
+          cover_source,
+          cover_id,
+          source,
+          created_by
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        ON CONFLICT (work_key) DO NOTHING
+      `;
+
+      const values = [
+        row.work_key,
+        row.title,
+        row.author_name,
+        row.description,
+        row.genre || null,
+        "openlibrary",
+        row.cover_id,
+        "openlibrary",
+        null,
+      ];
+
+      const result = await client.query(sql, values);
+
+      if (result.rowCount > 0) {
+        inserted++;
+      }
+    }
+
+    await client.query("COMMIT");
+    return inserted;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 };
 
 // ---- MAIN ----

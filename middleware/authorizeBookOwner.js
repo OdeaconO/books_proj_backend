@@ -1,25 +1,22 @@
 import { db } from "../db.js";
 
-export const authorizeBookOwner = (req, res, next) => {
+export const authorizeBookOwner = async (req, res, next) => {
   const bookId = req.params.id;
 
   const q = `
     SELECT source, created_by
     FROM books
-    WHERE id = ?
+    WHERE id = $1
   `;
 
-  db.query(q, [bookId], (err, data) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json("Database error");
-    }
+  try {
+    const { rows } = await db.query(q, [bookId]);
 
-    if (data.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json("Book not found");
     }
 
-    const book = data[0];
+    const book = rows[0];
 
     // Admin can modify anything
     if (req.user.role === "admin") {
@@ -32,5 +29,8 @@ export const authorizeBookOwner = (req, res, next) => {
     }
 
     return res.status(403).json("You are not allowed to modify this book");
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json("Database error");
+  }
 };
