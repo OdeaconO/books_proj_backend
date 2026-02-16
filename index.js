@@ -8,24 +8,45 @@ import authRoutes from "./routes/auth.js";
 import { verifyToken } from "./middleware/verifyToken.js";
 import { authorizeBookOwner } from "./middleware/authorizeBookOwner.js";
 import cloudinary from "./utils/cloudinary.js";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import morgan from "morgan";
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 mins
+  max: 300, // 300 requests per IP per 15 mins
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+});
+
+app.use(limiter);
+app.use("/auth", authLimiter);
+app.use(morgan("combined"));
 
 console.log("Cloudinary config OK:", cloudinary.config().cloud_name);
 
 const app = express();
 
+const allowedOrigins = ["https://kamitoshi.com", "https://www.kamitoshi.com"];
+
 app.use(
   cors({
     origin: function (origin, callback) {
-      const allowed = ["https://kamitoshi.com", "https://www.kamitoshi.com"];
-      if (!origin || allowed.includes(origin)) {
+      if (!origin) return callback(null, true); // allow server-to-server
+      if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error("Not allowed by CORS"));
       }
     },
+    credentials: true,
   }),
 );
 
+app.use(helmet());
 app.use(express.json());
 app.use("/auth", authRoutes);
 
@@ -131,7 +152,7 @@ app.get("/books", async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    return res.status(500).json(err);
+    return res.status(500).json("Internal server error");
   }
 });
 
