@@ -13,7 +13,12 @@ console.log("Cloudinary config OK:", cloudinary.config().cloud_name);
 
 const app = express();
 
-app.use(cors());
+app.use(
+  cors({
+    origin: ["https://kamitoshi.com", "https://www.kamitoshi.com"],
+  }),
+);
+
 app.use(express.json());
 app.use("/auth", authRoutes);
 
