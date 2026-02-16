@@ -22,13 +22,13 @@ const authLimiter = rateLimit({
   max: 20,
 });
 
+const app = express();
+
 app.use(limiter);
 app.use("/auth", authLimiter);
 app.use(morgan("combined"));
 
 console.log("Cloudinary config OK:", cloudinary.config().cloud_name);
-
-const app = express();
 
 const allowedOrigins = ["https://kamitoshi.com", "https://www.kamitoshi.com"];
 
