@@ -30,12 +30,20 @@ app.use(morgan("combined"));
 
 console.log("Cloudinary config OK:", cloudinary.config().cloud_name);
 
-const allowedOrigins = ["https://kamitoshi.com", "https://www.kamitoshi.com"];
+const allowedOrigins =
+  process.env.NODE_ENV === "production"
+    ? ["https://kamitoshi.com", "https://www.kamitoshi.com"]
+    : [
+        "http://localhost:3000",
+        "http://localhost:8800",
+        "https://kamitoshi.com",
+        "https://www.kamitoshi.com",
+      ];
 
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin) return callback(null, true); // allow server-to-server
+      if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
