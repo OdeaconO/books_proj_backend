@@ -15,7 +15,14 @@ const app = express();
 
 app.use(
   cors({
-    origin: ["https://kamitoshi.com", "https://www.kamitoshi.com"],
+    origin: function (origin, callback) {
+      const allowed = ["https://kamitoshi.com", "https://www.kamitoshi.com"];
+      if (!origin || allowed.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
   }),
 );
 
