@@ -1,6 +1,6 @@
 # 📚 Books Project – Backend
 
-## VISIT THE SITE @ → [kamitoshi](https://www.kamitoshi.com)
+## VISIT THE SITE @ → [kamitoshi.com](https://www.kamitoshi.com)
 
 ## 🚀 Overview
 
