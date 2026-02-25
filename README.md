@@ -148,7 +148,7 @@ Handles:
 - POST /auth/register
 - POST /auth/login
 
-## Books
+### Books
 
 - GET /books
 - GET /books/:id
