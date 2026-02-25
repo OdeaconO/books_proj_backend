@@ -50,10 +50,6 @@ The backend handles:
 - multer
 - cloudinary
 
-### CSV Handling
-
-- csv-parser
-
 ## 🔐 Security Middleware
 
 ### Helmet
